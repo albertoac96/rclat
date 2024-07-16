@@ -1,0 +1,136 @@
+<?php
+
+set_time_limit(0); // Permitir que el script se ejecute indefinidamente
+
+// Función para obtener contenido JSON desde una URL con manejo de tiempo de espera
+function get_json_content($url) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30); // Establecer tiempo de espera en 30 segundos
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true); // Seguir redirecciones
+    curl_setopt($ch, CURLOPT_MAXREDIRS, 10); // Máximo número de redirecciones a seguir
+
+    $response = curl_exec($ch);
+
+    if (curl_errno($ch)) {
+        echo 'Error:' . curl_error($ch) . " al obtener URL: $url<br>";
+        flush(); // Enviar salida al navegador
+        curl_close($ch);
+        return null;
+    }
+
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    if ($http_code != 200) {
+        echo "HTTP error code: $http_code for URL: $url<br>";
+        flush(); // Enviar salida al navegador
+        curl_close($ch);
+        return null;
+    }
+
+    curl_close($ch);
+    return json_decode($response, true);
+}
+
+// Función para escribir datos en un archivo CSV
+function write_to_csv($filename, $data) {
+    $file = fopen($filename, 'w');
+    fputcsv($file, array_keys($data[0]));
+    foreach ($data as $row) {
+        fputcsv($file, $row);
+    }
+    fclose($file);
+}
+
+// URL del archivo JSON principal
+$main_json_url = 'https://intchron.org/record.json';
+echo "Cargando JSON principal desde: $main_json_url<br>";
+flush(); // Enviar salida al navegador
+
+// Cargar el archivo JSON principal
+$main_data = get_json_content($main_json_url);
+
+if (!$main_data) {
+    die("Error al cargar el JSON principal.\n");
+}
+
+$csv_data = [];
+
+foreach ($main_data['records'] as $record) {
+    $country_name = $record['country'];
+    $country_json_url = $record['file'];
+    echo "Entrando a $country_name<br>";
+    flush(); // Enviar salida al navegador
+
+    // Obtener la lista de sitios para el país actual
+    $country_data = get_json_content($country_json_url);
+    if (!$country_data) {
+        echo "Error al obtener datos del país: $country_name<br>";
+        flush(); // Enviar salida al navegador
+        continue;
+    }
+
+    foreach ($country_data['records'] as $site) {
+        $site_name = $site['site'];
+        $site_json_url = str_replace(' ', '%20', $site['file']); // Codificar espacios en la URL
+        echo "  Procesando sitio: $site_name<br>";
+        flush(); // Enviar salida al navegador
+
+        // Validar URL del sitio antes de hacer la solicitud
+        if (filter_var($site_json_url, FILTER_VALIDATE_URL) === FALSE) {
+            echo "URL no válida: $site_json_url<br>";
+            flush(); // Enviar salida al navegador
+            continue;
+        }
+
+        // Obtener la información de muestras para el sitio actual
+        $site_data = get_json_content($site_json_url);
+        if (!$site_data) {
+            echo "Error al obtener datos del sitio: $site_name desde URL: $site_json_url<br>";
+            flush(); // Enviar salida al navegador
+            continue;
+        }
+
+        $compilation_by = $site_data['compilation']['by'] ?? 'Unknown';
+        $compilation_file = $site_data['compilation']['url'] ?? 'Unknown';
+
+        foreach ($site_data['records'] as $series) {
+            if (!isset($series['file_data']['series_list'][0]['data'])) {
+                echo "Datos de serie no encontrados en el sitio: $site_name<br>";
+                flush(); // Enviar salida al navegador
+                continue;
+            }
+            $series_data = $series['file_data']['series_list'][0]['data'];
+            $num_samples = count($series_data['labcode']);
+            for ($i = 0; $i < $num_samples; $i++) {
+                $csv_data[] = [
+                    'country' => $country_name,
+                    'site' => $site_name,
+                    'labcode' => $series_data['labcode'][$i] ?? '',
+                    'longitude' => $series_data['longitude'][$i] ?? '',
+                    'latitude' => $series_data['latitude'][$i] ?? '',
+                    'sample' => $series_data['sample'][$i] ?? '',
+                    'material' => $series_data['material'][$i] ?? '',
+                    'species' => $series_data['species'][$i] ?? '',
+                    'd13C' => $series_data['d13C'][$i] ?? '',
+                    'r_date' => $series_data['r_date'][$i] ?? '',
+                    'r_date_sigma' => $series_data['r_date_sigma'][$i] ?? '',
+                    'qual' => $series_data['qual'][$i] ?? '',
+                    'F14C' => $series_data['F14C'][$i] ?? '',
+                    'F14C_sigma' => $series_data['F14C_sigma'][$i] ?? '',
+                    'details_url' => $site_json_url,
+                    'compilation_by' => $compilation_by,
+                    'compilation_file' => $compilation_file
+                ];
+            }
+        }
+    }
+}
+
+// Guardar los datos en un archivo CSV
+$csv_filename = 'intchron_data.csv';
+write_to_csv($csv_filename, $csv_data);
+
+echo "Datos extraídos y guardados en $csv_filename<br>";
+flush(); // Enviar salida al navegador
+?>
